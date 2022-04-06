@@ -5,12 +5,15 @@ import org.apache.kafka.streams.{KafkaStreams, StreamsConfig}
 import org.apache.kafka.common.serialization.{Deserializer, Serde, Serializer, StringSerializer}
 import org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG
 import org.apache.kafka.clients.producer.{KafkaProducer, Producer, ProducerConfig, ProducerRecord}
-import org.apache.kafka.streams.scala.kstream.Materialized
+import org.apache.kafka.streams.scala.kstream.{KStream, KTable, Materialized}
 import org.apache.kafka.streams.state.Stores
 
 import java.nio.charset.StandardCharsets
 import java.util.Properties
 import java.time.Duration
+import scala.+:
+import scala.collection.immutable.Queue
+import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
@@ -30,8 +33,17 @@ object MovingAverage extends App {
   props.put("retries", 0)
 
   implicit object ListSerde extends Serde[List[Double]] {
-    override def serializer: Serializer[List[Double]] = ???
-    override def deserializer: Deserializer[List[Double]] = ???
+    override def serializer(): Serializer[List[Double]] = (topic: String, data: List[Double]) => {
+      var ret = ""
+      for (tmp <- data) {
+        ret += tmp + " "
+      }
+      ret.toCharArray.map(chr => chr.toByte)
+    }
+
+    override def deserializer(): Deserializer[List[Double]] = (topic: String, data: Array[Byte]) => {
+      new String(data.map(byt => byt.toChar)).split(" ").map(str => str.toDouble).toList
+    }
   }
 
   Future {
@@ -44,10 +56,22 @@ object MovingAverage extends App {
 
   def makeTopology(k: Int, inputTopic: String, outputTopic: String) = {
     implicit val materializer: Materialized[String, List[Double], ByteArrayKeyValueStore] =
-      Materialized.as[String, List[Double]](Stores.inMemoryKeyValueStore("price-store"))
+      Materialized.as[String, List[Double]](Stores.inMemoryKeyValueStore("store"))
 
     val builder = new StreamsBuilder
-    ???
+    val numbers: KStream[String, Double] = builder.stream[String, String](inputTopic).map((key, value) => (key, value.toDouble))
+    val groupedValue: KTable[String, List[Double]] = numbers.groupByKey.aggregate(List[Double]())((key, value, prev) => {
+      if(prev.length >= k){
+        value +: prev.reverse.tail.reverse
+      }else{
+        value +: prev
+      }
+    })
+
+    groupedValue.filter((key, curLs) => curLs.length >= k).mapValues((key, curLs) => {
+        s"key = ${key}, numbers to average = ${curLs.toArray.mkString("[", ",", "]")}, average = ${curLs.sum / k}"
+    } ).toStream.to(outputTopic)
+
     builder.build()
   }
 

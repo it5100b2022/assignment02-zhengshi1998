@@ -5,11 +5,9 @@ import org.apache.kafka.streams.{KafkaStreams, StreamsConfig}
 import org.apache.kafka.common.serialization.{Deserializer, Serde, Serializer, StringSerializer}
 import org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG
 import org.apache.kafka.clients.producer.{KafkaProducer, Producer, ProducerConfig, ProducerRecord}
-import org.apache.kafka.streams.processor.StateStore
-import org.apache.kafka.streams.scala.kstream.Materialized
+import org.apache.kafka.streams.scala.kstream.{KStream, KTable, Materialized}
 import org.apache.kafka.streams.state.Stores
 
-import java.nio.charset.StandardCharsets
 import java.util.Properties
 import java.time.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -31,8 +29,14 @@ object MaximumGains extends App {
   props.put("retries", 0)
 
   implicit object PairSerde extends Serde[(Double, Double)] {
-    override def serializer: Serializer[(Double, Double)] = ???
-    override def deserializer: Deserializer[(Double, Double)] = ???
+    override def serializer: Serializer[(Double, Double)] = (topic: String, data: (Double, Double)) => {
+      var ret: String = data._1.toString + " " + data._2.toString
+      ret.toCharArray.map(chr => chr.toByte)
+    }
+    override def deserializer: Deserializer[(Double, Double)] = (topic: String, data: Array[Byte]) => {
+      val tmp: Array[String] = new String(data.map(byt => byt.toChar)).split(" ")
+      (tmp(0).toDouble, tmp(1).toDouble)
+    }
   }
 
   Future {
@@ -43,13 +47,26 @@ object MaximumGains extends App {
       Thread.sleep(100)
       val tickerValue = (1000 + 100*(1+0.001*i)*sin(i/10.0)*(1+sin(i/100.0))).toInt
       val r = new ProducerRecord("prices", tickerSymbols(i % tickerSymbols.length), s"$tickerValue")
+
       producer.send(r)
     }
   }
 
   def makeTopology(inputTopic: String, outputTopic: String) = {
+    implicit val materialize: Materialized[String, (Double, Double), ByteArrayKeyValueStore] =
+      Materialized.as[String, (Double, Double)](Stores.inMemoryKeyValueStore("price-store"))
+
     val builder = new StreamsBuilder
-    ???
+
+    // transefer String data into (Double, Double)
+    val data = builder.stream[String, String](inputTopic).mapValues((curVal) => (curVal.toDouble, curVal.toDouble))
+
+    // group by key -> reduce to update tuple, such that tuple._1 = current price; tuple._2 = min price up to now
+    // -> filter values that current price <= min price up to now -> transfer tupled data into String as required
+    data.groupByKey.reduce((prev, curVal) => (curVal._1, Math.min(curVal._2, prev._2))).toStream.filter((key, value) => value._1 > value._2)
+    .mapValues((key, value) => s"asset: ${key}, current price: ${value._1}, lowest previous value: ${value._2}, gain: ${value._1 - value._2}")
+        .to(outputTopic)
+
     builder.build()
   }
 

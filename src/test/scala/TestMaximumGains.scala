@@ -11,20 +11,21 @@ class TestMaximumGains extends AnyFunSuite {
   test("The moving average solution is correct") {
     val props = new java.util.Properties()
     props.put(StreamsConfig.APPLICATION_ID_CONFIG, "test")
-    props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:1234")
+    props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:12345")
 
     val testDriver = new TopologyTestDriver(makeTopology("prices", "gains"), props)
 
     val testInputTopic = testDriver.createInputTopic("prices", stringSerde.serializer(), stringSerde.serializer())
     val testOutputTopic = testDriver.createOutputTopic("gains", stringSerde.deserializer(), stringSerde.deserializer())
     val tickerSymbols = Array("AAPL", "AMZN", "MSFT", "GOOGL", "NFLX", "NVDA")
-    Option(testDriver.getKeyValueStore[String, String]("price-store")).foreach(store => tickerSymbols.foreach(store.delete))
-    val inputVals = (1 to 44).map { i =>
+    Option(testDriver.getKeyValueStore[String, List[String]]("price-store")).foreach(store => {tickerSymbols.foreach(store.delete)})
+    val inputVals = (1 to 44).map ( i => {
       import java.lang.Math.sin
       val tick = (1000 + 100 * (1 + 0.001 * i) * sin(i / 10.0) * (1 + sin(i / 100.0))).toInt.toString
       new KeyValue(tickerSymbols(i % tickerSymbols.length), tick)
-    }.toList.asJava
+    }).toList.asJava
     testInputTopic.pipeKeyValueList(inputVals)
+
     testOutputTopic.readValuesToList().asScala shouldBe List(
       "asset: AMZN, current price: 1069.0, lowest previous value: 1010.0, gain: 59.0",
       "asset: MSFT, current price: 1078.0, lowest previous value: 1020.0, gain: 58.0",
