@@ -12,7 +12,7 @@ import java.util.Properties
 import java.time.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
-
+// all tests passed
 object MaximumGains extends App {
   import Serdes._
   val props = new Properties()
